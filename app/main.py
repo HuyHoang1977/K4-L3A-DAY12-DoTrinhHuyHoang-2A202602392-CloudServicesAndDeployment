@@ -73,7 +73,17 @@ class AskRequest(BaseModel):
 # ─────────────────────────────────────────────────────────────
 # Health & readiness
 # ─────────────────────────────────────────────────────────────
-@app.get("/health")
+# Dùng api_route chứ không phải app.get, vì app.get không nhận tham số
+# `methods` — chỉ api_route mới khai báo được nhiều phương thức cho một route.
+#
+# `methods=["GET", "HEAD"]` là bắt buộc, không phải thừa. FastAPI khai báo
+# @app.get chỉ nhận đúng GET: lớp APIRoute ghi đè __init__ của Starlette nên
+# không tự thêm HEAD như Route gốc làm. Gửi HEAD vào /health sẽ ra
+# 405 Method Not Allowed.
+#
+# Render (và nhiều LB/probe khác) dùng HEAD cho health check, nên chỉ khai
+# báo GET thì service bị coi là không khỏe mỗi lần probe — dù GET trả 200.
+@app.api_route("/health", methods=["GET", "HEAD"])
 def health():
     """Liveness probe — process còn sống không?
 
