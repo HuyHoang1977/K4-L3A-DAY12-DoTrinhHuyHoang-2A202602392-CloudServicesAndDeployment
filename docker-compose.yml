@@ -1,22 +1,15 @@
 # ═══════════════════════════════════════════════════════════════════
-# CP2 — Stack chạy ở máy bạn: agent + redis (+ nginx nếu làm phần cộng điểm)
+# CP2 — Stack chạy ở máy bạn: agent + redis (+ nginx nếu làm phần mở rộng)
 #
-# Service `redis` đã cho sẵn — chạy ngay từ Block 1 để có Redis mà code:
-#     docker compose up -d redis
+# Chạy:
+#   docker compose up -d redis      # chỉ Redis
+#   docker compose up -d             # agent + redis
+#   curl http://localhost:8000/health
+#   docker compose logs -f agent
 #
-# NHIỆM VỤ: bổ sung service `agent`. Yêu cầu:
-#   [ ] build từ Dockerfile trong thư mục hiện tại
-#   [ ] map cổng ra ngoài (8000:8000)
-#   [ ] KHÔNG viết secret thẳng vào file này — dùng nội suy biến môi trường
-#       `${AGENT_API_KEY}` (docker compose tự đọc từ file .env cùng thư mục)
-#   [ ] REDIS_URL trỏ tới `redis://redis:6379/0` — trong compose, tên service
-#       chính là hostname
-#   [ ] depends_on: redis
-#   [ ] healthcheck gọi /health
-#
-# MỞ RỘNG TÙY CHỌN: thêm service `nginx` làm load balancer
-# (không phải bonus chấm điểm riêng; nginx/nginx.conf đã có sẵn)
-#     docker compose up --scale agent=3
+# Load balancing (mở rộng tùy chọn của CP4) — 3 replica sau nginx:
+#   docker compose --profile lb up -d --scale agent=3
+#   curl http://localhost:8080/health
 #
 # Kiểm tra: pytest tests/test_cp2.py -v
 # ═══════════════════════════════════════════════════════════════════
@@ -35,10 +28,57 @@ services:
       timeout: 3s
       retries: 5
 
-  # TODO (CP2): khai báo service `agent` ở đây
-  # agent:
-  #   build: .
-  #   ...
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # init: tini làm PID 1 để tín hiệu của Docker tới được uvicorn.
+    # Không có nó, `docker compose stop` phải chờ hết timeout rồi SIGKILL.
+    init: true
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # KHÔNG viết secret thẳng vào file này. ${...} để compose đọc từ
+      # file .env cùng thư mục — file đó nằm trong .gitignore.
+      AGENT_API_KEY: ${AGENT_API_KEY}
+      # Trong compose, TÊN SERVICE chính là hostname. `localhost` bên
+      # trong container `agent` là chính container `agent`, không phải
+      # Redis — đây là lỗi phổ biến nhất lúc mới dùng compose.
+      REDIS_URL: redis://redis:6379/0
+      PORT: "8000"
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-10}
+      MONTHLY_BUDGET_USD: ${MONTHLY_BUDGET_USD:-10.0}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      redis:
+        # service_healthy = đợi Redis thật sự trả lời PING, không chỉ
+        # "container đã khởi động". Không có điều kiện này, agent có thể
+        # khởi động trước Redis và crash lúc kết nối.
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    # Không có volumes cho agent: service phải STATELESS để scale ngang
+    # được. Mọi state (lịch sử hội thoại, rate limit, chi phí) nằm ở
+    # Redis, nên container này ghi đè lên kia cũng không mất gì.
+
+  # ── Mở rộng tùy chọn: nginx làm load balancer ──────────────────
+  # Có `profiles` nên `docker compose up -d` mặc định KHÔNG bật nó.
+  # Muốn dùng: docker compose --profile lb up -d --scale agent=3
+  nginx:
+    image: nginx:1.27-alpine
+    profiles: ["lb"]
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - agent
 
 volumes:
   redis-data:

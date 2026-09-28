@@ -1,6 +1,93 @@
-# TODO (CP2): file này quyết định thứ KHÔNG được copy vào image.
-# Bỏ sót .env = leak secret vào image. Bỏ sót .git = image phình to.
-# Bổ sung đủ các mục còn thiếu — xem tests/test_cp2.py để biết yêu cầu.
+# .dockerignore quyết định thứ KHÔNG được gửi vào build context.
+#
+# Một lần `COPY . .` là TOÀN BỘ thư mục này được nén rồi gửi tới Docker
+# daemon và nằm trong từng layer của image. Bỏ sót .env = secret của bạn
+# nằm trong image; bỏ sót .git = image phình thêm hàng trăm MB mà
+# không đổi chức năng.
+#
+# LƯU Ý QUAN TRỌNG về cú pháp: Docker KHÔNG hiểu pattern không có dấu
+# `/` là "khớp ở mọi cấp" như .gitignore. Pattern `__pycache__` chỉ khớp
+# với `__pycache__` ở GỐC context, còn `app/__pycache__` thì không bị
+# loại. Muốn khớp mọi cấp phải dùng `**/`. Dưới đây mình viết cả hai
+# dạng để không nhầm.
+#
+# Kiểm tra lại sau khi sửa:
+#   docker build --no-cache -t ctx-probe -f <(echo "FROM scratch"; echo "COPY . /ctx") .
+# rồi xem danh sách file trong image.
 
+# ── Secret: tuyệt đối không được vào image ──────────────────────
+# Loại cả `.env.example` luôn: image không cần file mẫu này, và để nó
+# vào image chỉ tạo thêm cơ hội ai đó điền secret thật rồi push image
+# lên registry. Ở .dockerignore, rule khớp CUỐI CÙNG thắng — nên nếu
+# muốn giữ lại file thì phải viết dòng `!tên-file` ĐỨNG SAU (ở đây
+# không cần).
+.env
+**/.env
+.env.*
+**/.env.*
+**/*.pem
+**/*.key
+secrets/
+
+# ── Version control ────────────────────────────────────────────
 .git
 .gitignore
+.github
+.gitattributes
+**/.git
+
+# ── Môi trường ảo: dependency đã nằm trong image rồi ───────────
+.venv
+venv
+env
+ENV/
+.python-version
+
+# ── Bytecode và cache ──────────────────────────────────────────
+# `**/` là phần quan trọng: app/__pycache__ hay utils/__pycache__ đều
+# nằm trong image nếu chỉ ghi `__pycache__`.
+__pycache__
+**/__pycache__
+*.py[cod]
+**/*.py[cod]
+*$py.class
+**/*.so
+.pytest_cache
+**/.pytest_cache
+.mypy_cache
+**/.mypy_cache
+.ruff_cache
+**/.ruff_cache
+.ipynb_checkpoints
+htmlcov
+.coverage
+**/.coverage
+coverage.xml
+
+# ── IDE / OS ───────────────────────────────────────────────────
+.vscode
+.idea
+**/*.swp
+.DS_Store
+Thumbs.db
+**/.DS_Store
+
+# ── Thư mục không cần lúc chạy ─────────────────────────────────
+# KHÔNG được ignore `app` và `utils` — image cần chúng để chạy.
+tests/
+screenshots/
+nginx/
+*.md
+**/*.md
+!README.md
+exercises.md
+grade.py
+
+# ── Dữ liệu state cục bộ ──────────────────────────────────────
+data/
+*.log
+**/*.log
+*.db
+**/*.db
+*.sqlite3
+**/*.sqlite3

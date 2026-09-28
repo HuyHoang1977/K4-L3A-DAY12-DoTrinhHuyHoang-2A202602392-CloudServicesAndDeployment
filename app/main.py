@@ -87,6 +87,10 @@ def health():
     lời câu hỏi "có cần restart container này không?". Nếu nó phụ thuộc
     Redis, Redis chết một nhịp là cả cụm container bị restart theo.
     """
+    return {
+        "status": "ok",
+        "message": "Service is healthy"
+    }
     raise NotImplementedError("TODO (CP1/CP4): cài đặt /health")
 
 
@@ -145,7 +149,46 @@ def ask(
     ``user_id`` do ``verify_api_key`` trả về, nên request không có API key
     hợp lệ sẽ dừng ở 401 trước khi chạm vào bất cứ dòng nào ở đây.
     """
-    raise NotImplementedError("TODO (CP3/CP4): cài đặt /ask")
+    # Thứ tự dưới đây là điểm mấu chốt, không phải tình cờ:
+    #   1. Rate limit — rẻ nhất, chặn sớm nhất
+    #   2. Cost guard  — đọc 1 key Redis
+    #   3. Đọc lịch sử  — 1 lệnh Redis
+    #   4. Gọi LLM     — chỉ khi đã biết chắc là được phép
+    #   5. Ghi lại state + log
+    # Chặn sau khi đã gọi LLM nghĩa là vừa trả tiền vừa trả lỗi cho client.
+    limiter.check(user_id)
+    guard.check(user_id)
+
+    history = store.get_history(user_id)
+    result = ask_llm(payload.question, history)
+
+    # Ghi cả lượt hỏi lẫn lượt trả lời. Chỉ ghi lượt trả lời thì các
+    # lượt sau mất ngữ cảnh câu hỏi đã dẫn tới nó.
+    store.append(user_id, "user", payload.question)
+    store.append(user_id, "assistant", result["answer"])
+
+    # record SAU khi đã sinh chi phí thật. Ghi trước sẽ tính nhầm cả
+    # những request sau bị chặn 402 và không tốn đồng nào.
+    guard.record(user_id, result["cost_usd"])
+
+    log_event(
+        "ask_completed",
+        user_id=user_id,
+        tokens_in=result["tokens_in"],
+        tokens_out=result["tokens_out"],
+        cost_usd=result["cost_usd"],
+    )
+
+    return {
+        "answer": result["answer"],
+        "user_id": user_id,
+        # history là TRƯỚC lượt này, nên đây là số lượt đã có, không phải
+        # số lượt sau khi append.
+        "history_length": len(history),
+        "cost_usd": result["cost_usd"],
+        "tokens": {"in": result["tokens_in"], "out": result["tokens_out"]},
+    }
+
 
 
 if __name__ == "__main__":
