@@ -9,7 +9,7 @@
 
 | Mục | Nội dung |
 |-----|----------|
-| Họ và tên | Đỗ Trình Huy Hoàng |
+| Họ và tên | Đỗ Trịnh Huy Hoàng |
 | Mã học viên | 2A202602392 |
 | Repo | https://github.com/HuyHoang1977/K4-L3A-DAY12-DoTrinhHuyHoang-2A202602392-CloudServicesAndDeployment |
 
