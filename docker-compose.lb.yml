@@ -1,0 +1,43 @@
+# ═══════════════════════════════════════════════════════════════════
+# CP4 — Load balancing: 3 replica `agent` sau nginx.
+#
+# Dùng kèm file chính:
+#   docker compose -f docker-compose.yml -f docker-compose.lb.yml up -d --scale agent=3
+#   curl http://localhost:8080/health
+#   docker compose -f docker-compose.yml -f docker-compose.lb.yml logs -f nginx
+#
+# KHÔNG thêm nginx vào docker-compose.yml được không? Được, nhưng khi đó
+# `docker compose up -d` sẽ mở cả nginx dù bạn chỉ muốn chạy 1 agent. Tách
+# ra file override giúp: lệnh `docker compose up -d` mặc định vẫn giản
+# dịch như cũ, chỉ khi nào chủ động chỉ định -f mới bật nginx.
+#
+# Vì sao phải `!reset` cổng của agent:
+# Ở file chính, `agent` publish 8000:8000 ra host. Nếu giữ nguyên mà
+# scale 3, replica thứ 2 sẽ báo:
+#     Bind for 0.0.0.0:8000 failed: port is already allocated
+# Nhiều replica KHÔNG được cùng tranh một cổng host. Ở chế độ này chỉ
+# nginx được publish ra ngoài; các agent chỉ giao tiếp trong mạng nội bộ
+# qua DNS của compose (tên service `agent` trỏ tới cả 3 IP, nginx
+# round-robin).
+#
+# Cần Compose >= 2.24 cho `!reset` (kiểm tra: docker compose version).
+# ═══════════════════════════════════════════════════════════════════
+
+services:
+  agent:
+    ports: !reset []
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - agent
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

@@ -44,7 +44,21 @@ class Lifecycle:
         tham số này. Không làm gì nặng ở đây (không gọi mạng, không ghi file)
         — handler chạy xen giữa bytecode.
         """
-        raise NotImplementedError("TODO (CP4): cài đặt request_shutdown")
+        # Bước 1: chỉ bật cờ, tuyệt đối không làm việc nặng ở đây.
+        # Handler của signal chạy xen giữa bytecode đang thực thi, nên
+        # gọi mạng hay ghi file ở chỗ này có thể làm treo cả process.
+        # Cờ này là thứ /health đọc để báo 503, đẩy việc "rút khỏi vòng
+        # xoay" giao cho load balancer chứ không tự ý đóng socket ở đây.
+        self.shutting_down = True
+
+        # Bước 2: nhường lại cho handler trước đó — handler của uvicorn,
+        # thứ thực sự chịu trách nhiệm dừng server và chờ nốt request đang
+        # chạy. Bỏ qua bước này thì app bật cờ rồi chạy tiếp mãi mãi cho
+        # tới khi bị SIGKILL: viết code graceful shutdown rồi bị kill cứng
+        # còn tệ hơn là không viết gì.
+        previous = self._previous.get(signum)
+        if callable(previous):
+            previous(signum, frame)
 
     def install(self) -> None:
         """Đăng ký handler cho SIGTERM và SIGINT, nhớ lại handler cũ.
@@ -56,7 +70,13 @@ class Lifecycle:
 
         SIGTERM: orchestrator yêu cầu tắt. SIGINT: bạn bấm Ctrl+C.
         """
-        raise NotImplementedError("TODO (CP4): cài đặt install")
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            # Đọc handler hiện tại TRƯỚC khi ghi đè — thứ tự ngược lại thì
+            # ta ghi đè chính handler của uvicorn rồi lưu lại handler của
+            # mình, tức là mất cả hai.
+            self._previous[sig] = signal.getsignal(sig)
+            signal.signal(sig, self.request_shutdown)
+
 
 
 # Một instance dùng chung cho cả app

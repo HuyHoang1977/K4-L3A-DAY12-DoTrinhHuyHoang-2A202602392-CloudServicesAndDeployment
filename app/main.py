@@ -16,7 +16,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from functools import lru_cache
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -87,11 +87,21 @@ def health():
     lời câu hỏi "có cần restart container này không?". Nếu nó phụ thuộc
     Redis, Redis chết một nhịp là cả cụm container bị restart theo.
     """
+    # Đang tắt dần → 503. Đây là tín hiệu để load balancer/orchestrator
+    # RÚT container này khỏi vòng xoay, nhưng phải kiểm tra trước mọi
+    # dependency: nếu đang tắt thì việc Redis sống hay chết không còn ý
+    # nghĩa, và cứ gọi ping đi sẽ kéo dài thời gian shutdown.
+    if lifecycle.shutting_down:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"status": "shutting_down"},
+        )
+
     return {
         "status": "ok",
-        "message": "Service is healthy"
+        "service": SERVICE_NAME,
+        "version": SERVICE_VERSION,
     }
-    raise NotImplementedError("TODO (CP1/CP4): cài đặt /health")
 
 
 @app.get("/ready")
@@ -106,7 +116,26 @@ def ready(store: ConversationStore = Depends(get_store)):
     Khác /health ở chỗ: endpoint này ĐƯỢC PHÉP kiểm tra dependency. Load
     balancer dùng nó để quyết định có đẩy request vào instance này không.
     """
-    raise NotImplementedError("TODO (CP4): cài đặt /ready")
+    # Cùng lý do như /health: đang tắt thì trả 503 trước, đừng đi ping
+    # Redis — lúc này kết quả ping không quyết định được gì nữa.
+    if lifecycle.shutting_down:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"status": "shutting_down"},
+        )
+
+    # ping() tự nuốt exception và trả False, nên endpoint này không bao
+    # giờ ném lỗi ra ngoài. Điểm này quan trọng: nếu để exception lọt ra,
+    # /ready sẽ trả 500, mà 500 khiến orchestrator hiểu nhầm là app lỗi
+    # code rồi restart container — đúng cái điều ta muốn tránh.
+    if not store.ping():
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"status": "not ready", "redis": False},
+        )
+
+    return {"status": "ready", "redis": True}
+
 
 
 # ─────────────────────────────────────────────────────────────
