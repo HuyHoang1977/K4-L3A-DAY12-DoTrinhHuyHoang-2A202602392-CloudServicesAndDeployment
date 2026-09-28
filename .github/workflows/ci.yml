@@ -1,0 +1,108 @@
+name: CI/CD
+
+# Mỗi lần push hoặc mở pull request đều chạy. Quan trọng nhất là pull_request:
+# bắt lỗi TRƯỚC khi merge còn gì đó vào nhánh chính, đó mới là mục đích
+# chính của CI. Nếu chỉ có push thì lỗi chỉ lộ ra sau khi đã lên main.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Job này chỉ cần đọc code, không cần quyền ghi.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Cài dependency
+        run: pip install -r requirements.txt
+
+      # Bỏ test_cp5.py vì nó gọi vào service ĐÃ DEPLOY — trong CI chưa có
+      # gì để deploy thì lệnh đó luôn đỏ. Bỏ test_bonus_cicd.py vì nó kiểm
+      # chính file workflow này, chạy trong CI là vô nghĩa. Bỏ -m "not docker"
+      # vì runner có Docker sẵn, nên test build image vẫn nên chạy.
+      - name: Chạy test
+        run: pytest tests/ -v --ignore=tests/test_cp5.py --ignore=tests/test_bonus_cicd.py
+
+  build:
+    name: Build Docker image
+    runs-on: ubuntu-latest
+    # Chỉ build khi test đã xanh — thừa thì tốn thời gian runner vô ích.
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      # Dockerfile hỏng mà chỉ phát hiện lúc deploy là quá muộn. Ở đây lỗi
+      # sẽ hiện ngay trên PR, lúc sửa được rẻ nhất.
+      - name: Build image
+        run: docker build -t day12-agent:ci .
+
+      # In dung lượng để thấy ngay image phình bất thường. Giới hạn của
+      # lab là 500MB.
+      - name: Kiểm tra dung lượng image
+        run: |
+          docker images day12-agent:ci
+          SIZE=$(docker images day12-agent:ci --format "{{.Size}}")
+          MB=$(echo "$SIZE" | sed 's/MB//' | tr -d ' ')
+          echo "image = $MB MB"
+          awk "BEGIN { exit (\"$MB\" < 500 ? 0 : 1) }" \
+            || (echo "FAIL: image vuot 500MB" && exit 1)
+
+      # Build xong chưa chắy được. Dựng thật rồi gọi /health: bắt được
+      # cả lỗi "app không import được" lẫn lỗi "container không chạy user
+      # thường" mà chỉ nhìn log build thì không thấy.
+      #
+      # /health cố tình không gọi Redis nên không cần Redis ở đây — và
+      # key trong lệnh này chỉ là giá trị giả cho CI, không phải secret thật.
+      - name: Smoke test — dựng container và gọi /health
+        run: |
+          docker run -d --name smoke \
+            -e AGENT_API_KEY=ci-smoke-key-000 \
+            -e REDIS_URL=redis://127.0.0.1:6379/0 \
+            -p 8000:8000 day12-agent:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/health > /dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          echo "--- /health ---"
+          curl -fsS http://127.0.0.1:8000/health
+          echo
+          echo "--- /ask khong key (phai 401) ---"
+          code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            http://127.0.0.1:8000/ask \
+            -H "Content-Type: application/json" -d '{"question":"ping"}')
+          echo "HTTP $code"
+          test "$code" = "401" || (echo "FAIL: /ask tra $code thay vi 401" && exit 1)
+          echo "--- user trong container ---"
+          docker exec smoke id -un
+          docker rm -f smoke
+
+  deploy:
+    name: Deploy lên Render
+    runs-on: ubuntu-latest
+    # `needs` là thứ biến workflow thành một cái cổng chất lượng: không có
+    # nó thì GitHub chạy song song test và deploy, và code hỏng vẫn lên
+    # production trong lúc test đang đỏ.
+    needs: [test, build]
+    # Chỉ deploy từ nhánh chính. Mở pull request không được kéo theo một
+    # lần deploy — nếu không thì mỗi người đóng góp đều làm hỏng bản deploy.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      # URL này lấy ở Render: service → Settings → Deploy Hook.
+      # Nó BẮT BUỘC phải nằm trong GitHub Secrets (Settings → Secrets and
+      # variables → Actions), KHÔNG viết thẳng vào file này — file này nằm
+      # trong git và ai cũng đọc được.
+      - name: Gọi Render Deploy Hook
+        run: curl -fsSL "${{ secrets.RENDER_DEPLOY_HOOK }}"
